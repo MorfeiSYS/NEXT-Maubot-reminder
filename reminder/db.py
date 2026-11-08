@@ -14,7 +14,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 from typing import Dict, Iterator, List, Literal, Optional
-from datetime import datetime
+from datetime import datetime, tzinfo
 import re
 
 from sqlalchemy import (
@@ -34,7 +34,13 @@ import pytz
 
 from mautrix.types import EventID, RoomID, UserID
 
-from .util import ReminderInfo
+from .util import (
+    ReminderInfo,
+    UnknownTimezoneError,
+    format_tz_label,
+    resolve_timezone,
+    timezone_storage_id,
+)
 
 RoomLang = Literal["en", "ru"]
 LATIN_STREAK_THRESHOLD = 10
@@ -48,7 +54,7 @@ class ReminderDatabase:
     reminder: Table
     reminder_target: Table
     timezone: Table
-    tz_cache: Dict[UserID, pytz.timezone]
+    tz_cache: Dict[UserID, tzinfo]
     locale_cache: Dict[UserID, List[str]]
     room_lang_cache: Dict[RoomID, RoomLang]
     latin_streak: Dict[RoomID, int]
@@ -156,15 +162,16 @@ class ReminderDatabase:
         elif cmd in _EN_COMMANDS:
             self.set_room_lang(room_id, "en")
 
-    def set_timezone(self, user_id: UserID, tz: pytz.timezone) -> None:
+    def set_timezone(self, user_id: UserID, tz: tzinfo, raw: Optional[str] = None) -> None:
+        stored = timezone_storage_id(tz, raw)
         with self.db.begin() as tx:
             tx.execute(self.timezone.delete().where(self.timezone.c.user_id == user_id))
-            tx.execute(self.timezone.insert().values(user_id=user_id, timezone=tz.zone))
+            tx.execute(self.timezone.insert().values(user_id=user_id, timezone=stored))
         self.tz_cache[user_id] = tz
 
     def get_timezone(
-        self, user_id: UserID, default_tz: Optional[pytz.timezone] = None
-    ) -> Optional[pytz.timezone]:
+        self, user_id: UserID, default_tz: Optional[tzinfo] = None
+    ) -> tzinfo:
         try:
             return self.tz_cache[user_id]
         except KeyError:
@@ -172,10 +179,13 @@ class ReminderDatabase:
                 select([self.timezone.c.timezone]).where(self.timezone.c.user_id == user_id)
             )
             try:
-                self.tz_cache[user_id] = pytz.timezone(next(rows)[0])
-            except (pytz.UnknownTimeZoneError, StopIteration, IndexError):
+                self.tz_cache[user_id] = resolve_timezone(next(rows)[0])
+            except (UnknownTimezoneError, StopIteration, IndexError):
                 self.tz_cache[user_id] = default_tz or pytz.UTC
             return self.tz_cache[user_id]
+
+    def get_timezone_label(self, user_id: UserID, default_tz: Optional[tzinfo] = None) -> str:
+        return format_tz_label(self.get_timezone(user_id, default_tz))
 
     def set_locales(self, user_id: UserID, locales: List[str]) -> None:
         with self.db.begin() as tx:

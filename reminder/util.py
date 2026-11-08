@@ -14,7 +14,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Union
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, tzinfo
 import re
 
 from attr import dataclass
@@ -26,10 +26,86 @@ from maubot.handlers.command import Argument, ArgumentSyntaxError
 from mautrix.types import EventID, RoomID, UserID
 from mautrix.util.config import BaseProxyConfig, ConfigUpdateHelper
 
+from .i18n import Lang, t
 from .locales import locales
 
 if TYPE_CHECKING:
     from .bot import ReminderBot
+
+_OFFSET_UTC_GMT = re.compile(
+    r"^(?:utc|gmt)\s*([+-])\s*(\d{1,2})(?::(\d{2}))?$",
+    re.IGNORECASE,
+)
+_OFFSET_SIGNED = re.compile(r"^([+-])\s*(\d{1,2})(?::(\d{2}))?$")
+_OFFSET_SIGNED_HHMM = re.compile(r"^([+-])(\d{2}):(\d{2})$")
+_OFFSET_COMPACT = re.compile(r"^([+-])(\d{3,4})$")
+
+
+class UnknownTimezoneError(ValueError):
+    pass
+
+
+def _offset_minutes(sign: str, hours: int, minutes: int = 0) -> int:
+    total = hours * 60 + minutes
+    if total > 14 * 60:
+        raise UnknownTimezoneError("offset out of range")
+    return total if sign == "+" else -total
+
+
+def _parse_offset(val: str) -> Optional[int]:
+    m = _OFFSET_UTC_GMT.match(val)
+    if m:
+        return _offset_minutes(m.group(1), int(m.group(2)), int(m.group(3) or 0))
+    m = _OFFSET_SIGNED_HHMM.match(val)
+    if m:
+        return _offset_minutes(m.group(1), int(m.group(2)), int(m.group(3)))
+    m = _OFFSET_SIGNED.match(val)
+    if m:
+        return _offset_minutes(m.group(1), int(m.group(2)), int(m.group(3) or 0))
+    m = _OFFSET_COMPACT.match(val)
+    if m:
+        digits = m.group(2)
+        if len(digits) == 3:
+            return _offset_minutes(m.group(1), int(digits[0]), int(digits[1:]))
+        return _offset_minutes(m.group(1), int(digits[:2]), int(digits[2:]))
+    return None
+
+
+def resolve_timezone(raw: str) -> tzinfo:
+    if not raw or not str(raw).strip():
+        raise UnknownTimezoneError("empty timezone")
+    val = str(raw).strip()
+    try:
+        return pytz.timezone(val)
+    except pytz.UnknownTimeZoneError:
+        pass
+    minutes = _parse_offset(val)
+    if minutes is not None:
+        return pytz.FixedOffset(minutes)
+    raise UnknownTimezoneError(val)
+
+
+def timezone_storage_id(tz: tzinfo, raw: Optional[str] = None) -> str:
+    if raw and raw.strip():
+        return raw.strip()
+    return format_tz_label(tz)
+
+
+def format_tz_label(tz: tzinfo) -> str:
+    zone = getattr(tz, "zone", None)
+    if zone and "/" in zone:
+        return zone
+    if zone in (None, "UTC"):
+        return "UTC"
+    if isinstance(zone, str) and re.match(r"^[+-]\d{2}:\d{2}$", zone):
+        sign, rest = zone[0], zone[1:]
+        hours_str, mins = rest.split(":")
+        hours = int(hours_str)
+        minutes = int(mins)
+        if minutes:
+            return f"UTC{sign}{hours:02d}:{minutes:02d}"
+        return f"UTC{sign}{hours}"
+    return str(zone) if zone else "UTC"
 
 
 class Config(BaseProxyConfig):
@@ -47,6 +123,8 @@ class DateArgument(Argument):
     ) -> Tuple[str, Optional[datetime]]:
         tz = pytz.UTC
         use_locales = [locales["en_iso"]]
+        if instance and evt:
+            instance.db.touch_room_lang_from_command(evt.room_id, evt.content.body or "")
         if instance:
             tz = instance.db.get_timezone(evt.sender, instance.default_timezone)
             locale_ids = instance.db.get_locales(evt.sender)
@@ -55,20 +133,25 @@ class DateArgument(Argument):
                 if "ru_ru" not in locale_ids and "ru_ru" in locales:
                     use_locales = [locales["ru_ru"], *use_locales]
 
+        if not val.strip():
+            return val, None
         for locale in use_locales:
             match = locale.match(val)
             if match:
                 date = (datetime.now(tz=tz) + relativedelta(**match.params)).astimezone(pytz.UTC)
                 return match.unconsumed, date
+        if instance and evt and self.required:
+            lang: Lang = instance.db.get_room_lang(evt.room_id)
+            raise ArgumentSyntaxError(t("bad_date", lang), show_usage=False)
         return val, None
 
 
-def parse_timezone(val: str) -> Optional[pytz.timezone]:
+def parse_timezone(val: str) -> Optional[tzinfo]:
     if not val:
         return None
     try:
-        return pytz.timezone(val)
-    except pytz.UnknownTimeZoneError as e:
+        return resolve_timezone(val)
+    except UnknownTimezoneError as e:
         raise ArgumentSyntaxError(f"{val} is not a valid time zone.", show_usage=False) from e
 
 
@@ -119,6 +202,14 @@ _RU_MONTHS = (
 )
 
 
+def format_absolute(time: datetime, lang: str = "en") -> str:
+    if lang == "ru":
+        wd = _RU_WEEKDAYS[time.weekday()]
+        mon = _RU_MONTHS[time.month]
+        return f"{time.day} {mon} {time.year} г., {wd}, {time:%H:%M:%S} {time:%Z}"
+    return time.strftime("%A, %B %-d %Y at %H:%M:%S %Z")
+
+
 def format_time(time: datetime, lang: str = "en") -> str:
     now = datetime.now(tz=pytz.UTC).replace(microsecond=0)
     if time - now <= timedelta(days=7):
@@ -151,12 +242,8 @@ def format_time(time: datetime, lang: str = "en") -> str:
         if lang == "ru":
             return "через " + ", ".join(parts[:-1]) + f" и {parts[-1]}"
         return "in " + ", ".join(parts[:-1]) + f" and {parts[-1]}"
-    if lang == "ru":
-        local = time
-        wd = _RU_WEEKDAYS[local.weekday()]
-        mon = _RU_MONTHS[local.month]
-        return f"в {local:%H:%M:%S} {local:%Z} в {wd}, {local.day} {mon} {local.year} г."
-    return time.strftime("at %H:%M:%S %Z on %A, %B %-d %Y")
+    prefix = "в " if lang == "ru" else "at "
+    return prefix + format_absolute(time, lang)
 
 
 @dataclass

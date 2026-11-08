@@ -12,7 +12,7 @@
 
 Подписка и отмена возможны до последней минуты до срабатывания.
 
-Часовой пояс: `!напомни tz <timezone>` (рекомендуется [имя из TZ database](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones), например `Europe/Moscow`).
+Часовой пояс: `!напомни tz <timezone>` — IANA (`Europe/Moscow`, `Asia/Yakutsk`) или смещение (`UTC+9`, `GMT+05:30`). В конфиге инстанса то же для `default_timezone` (см. [`base-config.yaml`](base-config.yaml)).
 
 Локаль для разбора дат: `!напомни locale <список>` (для русского чата подойдёт `ru_ru`; список: `!напомни locales`).
 
@@ -27,13 +27,15 @@
 
 ## Сборка (Windows)
 
-Нужен [maubot-cli](https://docs.mau.fi/maubot/usage/cli/build.html) (`mbc` в PATH). Версия релиза — в файле [`VERSION`](VERSION) (сейчас 1.0.1).
+Идентификатор плагина в Maubot: **NEXT-reminder** (вместо upstream `xyz.maubot.reminder`).
+
+Нужен [maubot-cli](https://docs.mau.fi/maubot/usage/cli/build.html) (`mbc` в PATH). Версия релиза — в файле [`VERSION`](VERSION) (сейчас 1.0.2).
 
 ```powershell
 .\build\build.ps1
 ```
 
-Артефакт: `build/NEXT-Maubot-reminder-v1.0.1.mbp` (номер версии из `VERSION`).
+Артефакт: `build/NEXT-Maubot-reminder-v1.0.2.mbp` (номер версии из `VERSION`).
 
 Следующий патч-релиз и синхронизация `maubot.yaml`:
 

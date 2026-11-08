@@ -14,7 +14,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 from typing import List, Tuple, Type
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, tzinfo
 from html import escape
 import asyncio
 
@@ -22,6 +22,7 @@ import pytz
 
 from maubot import MessageEvent, Plugin
 from maubot.handlers import command, event
+from maubot.handlers.command import ArgumentSyntaxError
 from mautrix.types import (
     EventType,
     Format,
@@ -38,7 +39,29 @@ from mautrix.util.config import BaseProxyConfig
 from .db import ReminderDatabase
 from .i18n import Lang, build_remind_action, cmd_name, fmt_locales_join, t
 from .locales import locales
-from .util import Config, DateArgument, ReminderInfo, format_time, parse_timezone
+from .util import (
+    Config,
+    DateArgument,
+    ReminderInfo,
+    UnknownTimezoneError,
+    format_absolute,
+    format_time,
+    format_tz_label,
+    parse_timezone,
+    resolve_timezone,
+)
+
+REMINDER_EVENT_KEY = "NEXT-reminder"
+LEGACY_REMINDER_KEYS = ("xyz.maubot.reminder", "NEXT.reminder")
+
+
+def _reminder_payload(content) -> dict | None:
+    if REMINDER_EVENT_KEY in content:
+        return content[REMINDER_EVENT_KEY]
+    for key in LEGACY_REMINDER_KEYS:
+        if key in content:
+            return content[key]
+    return None
 
 
 class ReminderBot(Plugin):
@@ -46,7 +69,7 @@ class ReminderBot(Plugin):
     reminder_loop_task: asyncio.Future
     base_command: str
     base_aliases: Tuple[str, ...]
-    default_timezone: pytz.timezone
+    default_timezone: tzinfo
 
     @classmethod
     def get_config_class(cls) -> Type[BaseProxyConfig]:
@@ -64,8 +87,8 @@ class ReminderBot(Plugin):
         self.base_aliases = tuple(bc) if isinstance(bc, list) else (bc,)
         raw_timezone = self.config["default_timezone"]
         try:
-            self.default_timezone = pytz.timezone(raw_timezone)
-        except pytz.UnknownTimeZoneError:
+            self.default_timezone = resolve_timezone(raw_timezone)
+        except UnknownTimezoneError:
             self.log.warning(f"Unknown default timezone {raw_timezone}")
             self.default_timezone = pytz.UTC
 
@@ -75,8 +98,41 @@ class ReminderBot(Plugin):
     def _lang(self, room_id) -> Lang:
         return self.db.get_room_lang(room_id)
 
+    def _on_user_command(self, evt: MessageEvent) -> None:
+        self.db.touch_room_lang_from_command(evt.room_id, evt.content.body or "")
+
+    def _now_line(self, evt: MessageEvent) -> str:
+        lang = self._lang(evt.room_id)
+        tz = self.db.get_timezone(evt.sender, self.default_timezone)
+        now = datetime.now(tz=tz).replace(microsecond=0)
+        return t(
+            "current_time",
+            lang,
+            clock=format_absolute(now, lang),
+            zone=format_tz_label(tz),
+        )
+
+    def _help_text(self, evt: MessageEvent) -> str:
+        lang = self._lang(evt.room_id)
+        cmd = cmd_name(lang, self.base_command)
+        return (
+            self._now_line(evt)
+            + "\n\n"
+            + t("help_header", lang)
+            + t("help_cmd_add", lang, cmd=cmd)
+            + t("help_cmd_again", lang, cmd=cmd)
+            + t("help_cmd_list", lang, cmd=cmd)
+            + t("help_cmd_tz", lang, cmd=cmd)
+            + t("help_cmd_locale", lang, cmd=cmd)
+            + t("help_cmd_locales", lang, cmd=cmd)
+            + t("help_dates", lang)
+            + t("help_react", lang)
+            + t("help_cancel", lang)
+        )
+
     async def reply_l(self, evt: MessageEvent, key: str, **kwargs: str) -> None:
-        await evt.reply(t(key, self._lang(evt.room_id), **kwargs))
+        self._on_user_command(evt)
+        await evt.reply(t(key, self._lang(evt.room_id), **kwargs) + "\n\n" + self._now_line(evt))
 
     async def reminder_loop(self) -> None:
         try:
@@ -122,7 +178,7 @@ class ReminderBot(Plugin):
             format=Format.HTML,
             formatted_body=f"{users_html}: {escape(reminder.message)}",
         )
-        content["xyz.maubot.reminder"] = {
+        content[REMINDER_EVENT_KEY] = {
             "id": reminder.id,
             "message": reminder.message,
             "targets": list(reminder.users),
@@ -150,12 +206,22 @@ class ReminderBot(Plugin):
         require_subcommand=False,
         arg_fallthrough=False,
     )
-    @DateArgument("date", required=True)
+    @DateArgument("date", required=False)
     @command.argument("message", pass_raw=True, required=False)
     async def remind(self, evt: MessageEvent, date: datetime, message: str) -> None:
+        self._on_user_command(evt)
+        lang = self._lang(evt.room_id)
+        cmd = cmd_name(lang, self.base_command)
+        if date is None and not (message or "").strip():
+            await evt.reply(self._help_text(evt))
+            return
+        if date is None:
+            await evt.reply(
+                t("bad_date", lang, cmd=cmd) + "\n\n" + self._help_text(evt),
+            )
+            return
         date = date.replace(microsecond=0)
         now = datetime.now(tz=pytz.UTC).replace(microsecond=0)
-        lang = self._lang(evt.room_id)
         if date < now:
             await self.reply_l(evt, "past_date", date=str(date))
             return
@@ -175,6 +241,7 @@ class ReminderBot(Plugin):
     async def remind_for(
         self, evt: MessageEvent, user_id: UserID, date: datetime, message: str
     ) -> None:
+        self._on_user_command(evt)
         date = date.replace(microsecond=0)
         now = datetime.now(tz=pytz.UTC).replace(microsecond=0)
         if date < now:
@@ -192,6 +259,7 @@ class ReminderBot(Plugin):
     @remind.subcommand("reschedule", help="Reschedule a reminder you got", aliases=("again",))
     @DateArgument("date", required=True)
     async def reschedule(self, evt: MessageEvent, date: datetime) -> None:
+        self._on_user_command(evt)
         reply_to_id = evt.content.get_reply_to()
         if not reply_to_id:
             await self.reply_l(evt, "reschedule_need_reply")
@@ -202,18 +270,17 @@ class ReminderBot(Plugin):
             await self.reply_l(evt, "past_date", date=str(date))
             return
         reply_to = await self.client.get_event(evt.room_id, reply_to_id)
-        try:
-            reminder_info = reply_to.content["xyz.maubot.reminder"]
-            rem = ReminderInfo(
-                date=date,
-                room_id=evt.room_id,
-                message=reminder_info["message"],
-                reply_to=reminder_info["reply_to"],
-                users={evt.sender: evt.event_id},
-            )
-        except KeyError:
+        reminder_info = _reminder_payload(reply_to.content)
+        if not reminder_info:
             await self.reply_l(evt, "invalid_reminder_event")
             return
+        rem = ReminderInfo(
+            date=date,
+            room_id=evt.room_id,
+            message=reminder_info["message"],
+            reply_to=reminder_info["reply_to"],
+            users={evt.sender: evt.event_id},
+        )
         await self._remind(evt, rem, now, again=True)
 
     async def _remind(
@@ -248,7 +315,9 @@ class ReminderBot(Plugin):
             rem.message = "ping"
         when = self.format_time(evt.sender, rem)
         msg = (
-            t("remind_confirm_intro", lang, action=action, when=when)
+            self._now_line(evt)
+            + "\n\n"
+            + t("remind_confirm_intro", lang, action=action, when=when)
             + "\n\n"
             + t("remind_confirm_footer", lang)
         )
@@ -261,24 +330,13 @@ class ReminderBot(Plugin):
 
     @remind.subcommand("help", help="Usage instructions")
     async def help(self, evt: MessageEvent) -> None:
-        lang = self._lang(evt.room_id)
-        cmd = cmd_name(lang, self.base_command)
-        await evt.reply(
-            t("help_header", lang)
-            + t("help_cmd_add", lang, cmd=cmd)
-            + t("help_cmd_again", lang, cmd=cmd)
-            + t("help_cmd_list", lang, cmd=cmd)
-            + t("help_cmd_tz", lang, cmd=cmd)
-            + t("help_cmd_locale", lang, cmd=cmd)
-            + t("help_cmd_locales", lang, cmd=cmd)
-            + t("help_dates", lang)
-            + t("help_react", lang)
-            + t("help_cancel", lang)
-        )
+        self._on_user_command(evt)
+        await evt.reply(self._help_text(evt))
 
     @remind.subcommand("list", help="List your reminders")
     @command.argument("all", required=False)
     async def list(self, evt: MessageEvent, all: str) -> None:
+        self._on_user_command(evt)
         lang = self._lang(evt.room_id)
         room_id = evt.room_id
         if "all" in all:
@@ -300,9 +358,15 @@ class ReminderBot(Plugin):
         if room_id:
             scope += t("list_scope_room", lang)
         if len(reminders_str) == 0:
-            await self.reply_l(evt, "list_empty", scope=scope)
+            await evt.reply(
+                self._now_line(evt) + "\n\n" + t("list_empty", lang, scope=scope),
+            )
         else:
-            await evt.reply(t("list_header", lang, scope=scope, items=reminders_str))
+            await evt.reply(
+                self._now_line(evt)
+                + "\n\n"
+                + t("list_header", lang, scope=scope, items=reminders_str),
+            )
 
     def format_time(self, sender: UserID, reminder: ReminderInfo, room_id=None) -> str:
         lang = self._lang(room_id or reminder.room_id)
@@ -311,6 +375,7 @@ class ReminderBot(Plugin):
 
     @remind.subcommand("locales", help="List available locales")
     async def locales(self, evt: MessageEvent) -> None:
+        self._on_user_command(evt)
         lang = self._lang(evt.room_id)
 
         def _format_key(key: str) -> str:
@@ -318,7 +383,9 @@ class ReminderBot(Plugin):
             return f"{language.lower()}_{country.upper()}"
 
         await evt.reply(
-            t("locales_header", lang)
+            self._now_line(evt)
+            + "\n\n"
+            + t("locales_header", lang)
             + "\n".join(
                 f"* `{_format_key(key)}` - {locale.name}" for key, locale in locales.items()
             )
@@ -332,6 +399,7 @@ class ReminderBot(Plugin):
     @remind.subcommand("locale", help="Set your locale")
     @command.argument("locale", required=False, pass_raw=True)
     async def locale(self, evt: MessageEvent, locale: str) -> None:
+        self._on_user_command(evt)
         lang = self._lang(evt.room_id)
         if not locale:
             names = self._fmt_locales(self.db.get_locales(evt.sender), lang)
@@ -347,13 +415,23 @@ class ReminderBot(Plugin):
         await self.reply_l(evt, "locale_set", names=names)
 
     @remind.subcommand("timezone", help="Set your timezone", aliases=("tz",))
-    @command.argument("timezone", parser=parse_timezone, required=False)
-    async def timezone(self, evt: MessageEvent, timezone: pytz.timezone) -> None:
-        if not timezone:
-            await self.reply_l(evt, "tz_current", zone=self.db.get_timezone(evt.sender).zone)
+    @command.argument("timezone", pass_raw=True, required=False)
+    async def timezone(self, evt: MessageEvent, timezone: str) -> None:
+        self._on_user_command(evt)
+        if not timezone or not timezone.strip():
+            await self.reply_l(
+                evt,
+                "tz_current",
+                zone=self.db.get_timezone_label(evt.sender, self.default_timezone),
+            )
             return
-        self.db.set_timezone(evt.sender, timezone)
-        await self.reply_l(evt, "tz_set", zone=timezone.zone)
+        try:
+            tz = parse_timezone(timezone.strip())
+        except ArgumentSyntaxError as e:
+            await evt.reply(e.message + "\n\n" + self._now_line(evt))
+            return
+        self.db.set_timezone(evt.sender, tz, raw=timezone.strip())
+        await self.reply_l(evt, "tz_set", zone=format_tz_label(tz))
 
     @command.passive(
         regex=r"(?:\U0001F44D[\U0001F3FB-\U0001F3FF]?)",

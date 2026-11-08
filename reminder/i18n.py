@@ -122,6 +122,14 @@ STRINGS = {
         "en": "Set your timezone to {zone}",
         "ru": "Часовой пояс установлен: {zone}",
     },
+    "current_time": {
+        "en": "Your current time: {clock} ({zone})",
+        "ru": "Сейчас у вас: {clock} (пояс {zone})",
+    },
+    "bad_date": {
+        "en": "I couldn't understand the date/time. Try `!{cmd} help` or examples like `2 days` / `friday 15:00`.",
+        "ru": "Не удалось разобрать дату/время. Напишите `!{cmd} help` или, например, `2 дня` / `пятница 15:00`.",
+    },
 }
 
 

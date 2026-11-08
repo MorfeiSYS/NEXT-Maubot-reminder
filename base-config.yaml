@@ -1,9 +1,26 @@
-# Default timezone for users who did not set one.
-# This is parsed with pytz, so the usual format is Continent/City, e.g. Europe/Helsinki.
-default_timezone: 'UTC'
+# Часовой пояс по умолчанию для пользователей, которые не задали свой (!напомни tz / !remind tz).
+#
+# Допустимые форматы:
+#   1) IANA TZ database — «Континент/Город» (рекомендуется, если есть именованная зона):
+#      Europe/Moscow, Asia/Yakutsk, UTC
+#   2) Фиксированное смещение от UTC (без перехода на летнее время):
+#      UTC+9, UTC-5, GMT+9, UTC+05:30, +09:00, +09
+#
+# Примеры IANA для России:
+#   Europe/Kaliningrad (UTC+2), Europe/Moscow (UTC+3), Asia/Yekaterinburg (UTC+5),
+#   Asia/Yakutsk (UTC+9), Asia/Vladivostok (UTC+10) — полный список:
+#   https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
+#
+# Якутск можно задать как Asia/Yakutsk или как UTC+9 — результат для «сейчас» одинаковый,
+# но IANA учитывает исторические правила, смещение всегда постоянно.
+# Не путайте со старыми именами Etc/GMT+N: в IANA у Etc знак смещения инвертирован
+# (Etc/GMT-9 это UTC+9, а Etc/GMT+9 это UTC-9).
+#
+# Ориентир: если на часах в Москве 18:00 — укажите Europe/Moscow или UTC+3.
+default_timezone: 'Europe/Moscow'
 
-# Base command without the prefix (!).
-# If a list is provided, the first is the main name and the rest are aliases.
+# Базовые команды без префикса «!».
+# Если указан список — первая строка основное имя, остальные алиасы (все работают одинаково).
 base_command:
 - remind
 - reminder

@@ -37,6 +37,9 @@ if (-not (Get-Command mbc -ErrorAction SilentlyContinue)) {
 
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $OutFile = Join-Path $OutDir "NEXT-Maubot-reminder-v$Version.mbp"
+if (Test-Path $OutFile) {
+    Remove-Item -Force $OutFile
+}
 
 Push-Location $Root
 try {

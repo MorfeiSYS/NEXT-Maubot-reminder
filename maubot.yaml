@@ -1,6 +1,6 @@
-maubot: 0.4.1
-id: xyz.maubot.reminder
-version: 1.0.1
+maubot: 0.6.0
+id: NEXT-reminder
+version: 1.0.4
 license: AGPL-3.0-or-later
 modules:
 - reminder
