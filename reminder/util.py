@@ -51,6 +51,9 @@ class DateArgument(Argument):
             tz = instance.db.get_timezone(evt.sender, instance.default_timezone)
             locale_ids = instance.db.get_locales(evt.sender)
             use_locales = [locales[id] for id in locale_ids if id in locales]
+            if evt and instance.db.get_room_lang(evt.room_id) == "ru":
+                if "ru_ru" not in locale_ids and "ru_ru" in locales:
+                    use_locales = [locales["ru_ru"], *use_locales]
 
         for locale in use_locales:
             match = locale.match(val)
@@ -75,24 +78,84 @@ def pluralize(val: int, unit: str) -> str:
     return f"{val} {unit}s"
 
 
-def format_time(time: datetime) -> str:
+def _ru_plural(n: int, one: str, few: str, many: str) -> str:
+    n = abs(n)
+    if n % 100 in range(11, 15):
+        form = many
+    else:
+        r = n % 10
+        if r == 1:
+            form = one
+        elif r in (2, 3, 4):
+            form = few
+        else:
+            form = many
+    return f"{n} {form}"
+
+
+_RU_WEEKDAYS = (
+    "понедельник",
+    "вторник",
+    "среда",
+    "четверг",
+    "пятница",
+    "суббота",
+    "воскресенье",
+)
+_RU_MONTHS = (
+    "",
+    "января",
+    "февраля",
+    "марта",
+    "апреля",
+    "мая",
+    "июня",
+    "июля",
+    "августа",
+    "сентября",
+    "октября",
+    "ноября",
+    "декабря",
+)
+
+
+def format_time(time: datetime, lang: str = "en") -> str:
     now = datetime.now(tz=pytz.UTC).replace(microsecond=0)
     if time - now <= timedelta(days=7):
         delta = time - now
         parts = []
         if delta.days > 0:
-            parts.append(pluralize(delta.days, "day"))
+            if lang == "ru":
+                parts.append(_ru_plural(delta.days, "день", "дня", "дней"))
+            else:
+                parts.append(pluralize(delta.days, "day"))
         hours, seconds = divmod(delta.seconds, 60)
         hours, minutes = divmod(hours, 60)
         if hours > 0:
-            parts.append(pluralize(hours, "hour"))
+            if lang == "ru":
+                parts.append(_ru_plural(hours, "час", "часа", "часов"))
+            else:
+                parts.append(pluralize(hours, "hour"))
         if minutes > 0:
-            parts.append(pluralize(minutes, "minute"))
+            if lang == "ru":
+                parts.append(_ru_plural(minutes, "минуту", "минуты", "минут"))
+            else:
+                parts.append(pluralize(minutes, "minute"))
         if seconds > 0:
-            parts.append(pluralize(seconds, "second"))
+            if lang == "ru":
+                parts.append(_ru_plural(seconds, "секунду", "секунды", "секунд"))
+            else:
+                parts.append(pluralize(seconds, "second"))
         if len(parts) == 1:
-            return "in " + parts[0]
+            return ("через " if lang == "ru" else "in ") + parts[0]
+        if lang == "ru":
+            return "через " + ", ".join(parts[:-1]) + f" и {parts[-1]}"
         return "in " + ", ".join(parts[:-1]) + f" and {parts[-1]}"
+    if lang == "ru":
+        local = time
+        wd = _RU_WEEKDAYS[local.weekday()]
+        mon = _RU_MONTHS[local.month]
+        return f"в {local:%H:%M:%S} {local:%Z} в {wd}, {local.day} {mon} {local.year} г."
     return time.strftime("at %H:%M:%S %Z on %A, %B %-d %Y")
 
 

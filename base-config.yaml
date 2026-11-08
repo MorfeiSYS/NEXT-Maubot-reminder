@@ -7,3 +7,4 @@ default_timezone: 'UTC'
 base_command:
 - remind
 - reminder
+- напомни

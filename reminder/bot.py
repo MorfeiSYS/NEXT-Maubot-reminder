@@ -36,6 +36,7 @@ from mautrix.util import background_task
 from mautrix.util.config import BaseProxyConfig
 
 from .db import ReminderDatabase
+from .i18n import Lang, build_remind_action, cmd_name, fmt_locales_join, t
 from .locales import locales
 from .util import Config, DateArgument, ReminderInfo, format_time, parse_timezone
 
@@ -70,6 +71,12 @@ class ReminderBot(Plugin):
 
     async def stop(self) -> None:
         self.reminder_loop_task.cancel()
+
+    def _lang(self, room_id) -> Lang:
+        return self.db.get_room_lang(room_id)
+
+    async def reply_l(self, evt: MessageEvent, key: str, **kwargs: str) -> None:
+        await evt.reply(t(key, self._lang(evt.room_id), **kwargs))
 
     async def reminder_loop(self) -> None:
         try:
@@ -125,6 +132,17 @@ class ReminderBot(Plugin):
             content.set_reply(await self.client.get_event(reminder.room_id, reminder.reply_to))
         await self.client.send_message(reminder.room_id, content)
 
+    @event.on(EventType.ROOM_MESSAGE)
+    async def on_room_message(self, evt: MessageEvent) -> None:
+        if evt.sender == self.client.mxid:
+            return
+        body = evt.content.body or ""
+        if body.startswith("!"):
+            self.db.touch_room_lang_from_command(evt.room_id, body)
+            return
+        if evt.content.msgtype == MessageType.TEXT:
+            self.db.touch_room_lang_from_message(evt.room_id, body)
+
     @command.new(
         name=lambda self: self.base_command,
         aliases=lambda self, alias: alias in self.base_aliases,
@@ -137,8 +155,9 @@ class ReminderBot(Plugin):
     async def remind(self, evt: MessageEvent, date: datetime, message: str) -> None:
         date = date.replace(microsecond=0)
         now = datetime.now(tz=pytz.UTC).replace(microsecond=0)
+        lang = self._lang(evt.room_id)
         if date < now:
-            await evt.reply(f"Sorry, {date} is in the past and I don't have a time machine :(")
+            await self.reply_l(evt, "past_date", date=str(date))
             return
         rem = ReminderInfo(
             date=date,
@@ -159,7 +178,7 @@ class ReminderBot(Plugin):
         date = date.replace(microsecond=0)
         now = datetime.now(tz=pytz.UTC).replace(microsecond=0)
         if date < now:
-            await evt.reply(f"Sorry, {date} is in the past and I don't have a time machine :(")
+            await self.reply_l(evt, "past_date", date=str(date))
             return
         rem = ReminderInfo(
             date=date,
@@ -175,12 +194,12 @@ class ReminderBot(Plugin):
     async def reschedule(self, evt: MessageEvent, date: datetime) -> None:
         reply_to_id = evt.content.get_reply_to()
         if not reply_to_id:
-            await evt.reply("You must reply to a reminder event to reschedule it.")
+            await self.reply_l(evt, "reschedule_need_reply")
             return
         date = date.replace(microsecond=0)
         now = datetime.now(tz=pytz.UTC).replace(microsecond=0)
         if date < now:
-            await evt.reply(f"Sorry, {date} is in the past and I don't have a time machine :(")
+            await self.reply_l(evt, "past_date", date=str(date))
             return
         reply_to = await self.client.get_event(evt.room_id, reply_to_id)
         try:
@@ -193,7 +212,7 @@ class ReminderBot(Plugin):
                 users={evt.sender: evt.event_id},
             )
         except KeyError:
-            await evt.reply("That doesn't look like a valid reminder event.")
+            await self.reply_l(evt, "invalid_reminder_event")
             return
         await self._remind(evt, rem, now, again=True)
 
@@ -205,28 +224,33 @@ class ReminderBot(Plugin):
         again: bool = False,
         recipient: str = "you",
     ) -> None:
+        lang = self._lang(evt.room_id)
         if rem.date == now:
             await self.send_reminder(rem)
             return
         if rem.date.year > now.year + 125:
-            recipient = "your descendants" if recipient == "you" else f"{recipient}'s descendants"
-        remind_type = f"remind {recipient} "
+            if recipient == "you":
+                recipient = "your descendants"
+            else:
+                recipient = f"{recipient}'s descendants"
+        evt_link = ""
         if rem.reply_to:
             evt_link = f"[event](https://matrix.to/#/{rem.room_id}/{rem.reply_to})"
-            if rem.message:
-                remind_type += f"to {rem.message} (replying to that {evt_link})"
-            else:
-                remind_type += f"about that {evt_link}"
-        elif rem.message:
-            remind_type += f"to {rem.message}"
-        else:
-            remind_type = "ping you"
+        action = build_remind_action(
+            lang,
+            recipient=recipient,
+            again=again,
+            message=rem.message,
+            reply_to=bool(rem.reply_to),
+            evt_link=evt_link,
+        )
+        if not rem.message and not rem.reply_to:
             rem.message = "ping"
-        if again:
-            remind_type += " again"
+        when = self.format_time(evt.sender, rem)
         msg = (
-            f"I'll {remind_type} {self.format_time(evt.sender, rem)}.\n\n"
-            f"(others can \U0001f44d this message to get pinged too)"
+            t("remind_confirm_intro", lang, action=action, when=when)
+            + "\n\n"
+            + t("remind_confirm_footer", lang)
         )
         rem.event_id = await evt.reply(msg)
         self.db.insert(rem)
@@ -237,24 +261,25 @@ class ReminderBot(Plugin):
 
     @remind.subcommand("help", help="Usage instructions")
     async def help(self, evt: MessageEvent) -> None:
+        lang = self._lang(evt.room_id)
+        cmd = cmd_name(lang, self.base_command)
         await evt.reply(
-            f"Maubot [Reminder](https://github.com/maubot/reminder) plugin.\n\n"
-            f"* !{self.base_command} <date> <message> - Add a reminder\n"
-            f"* !{self.base_command} again <date> - Reply to a reminder to reschedule it\n"
-            f"* !{self.base_command} list - Get a list of your reminders\n"
-            f"* !{self.base_command} tz <timezone> - Set your time zone\n"
-            f"* !{self.base_command} locale <locale> - Set your locale\n"
-            f"* !{self.base_command} locales - List available locales\n\n"
-            "<date> can be a time delta (e.g. `2 days 1.5 hours` or `friday at 15:00`) "
-            "or an absolute date (e.g. `2020-03-27 15:00`)\n\n"
-            "To get mentioned by a reminder added by someone else, upvote the message "
-            "by reacting with \U0001f44d.\n\n"
-            "To cancel a reminder, remove the message or reaction."
+            t("help_header", lang)
+            + t("help_cmd_add", lang, cmd=cmd)
+            + t("help_cmd_again", lang, cmd=cmd)
+            + t("help_cmd_list", lang, cmd=cmd)
+            + t("help_cmd_tz", lang, cmd=cmd)
+            + t("help_cmd_locale", lang, cmd=cmd)
+            + t("help_cmd_locales", lang, cmd=cmd)
+            + t("help_dates", lang)
+            + t("help_react", lang)
+            + t("help_cancel", lang)
         )
 
     @remind.subcommand("list", help="List your reminders")
     @command.argument("all", required=False)
     async def list(self, evt: MessageEvent, all: str) -> None:
+        lang = self._lang(evt.room_id)
         room_id = evt.room_id
         if "all" in all:
             room_id = None
@@ -264,71 +289,71 @@ class ReminderBot(Plugin):
                 evt_link = f"[event](https://matrix.to/#/{rem.room_id}/{rem.reply_to})"
                 if rem.message:
                     return f'"{rem.message}" (replying to {evt_link})'
-                else:
-                    return evt_link
-            else:
-                return f'"{rem.message}"'
+                return evt_link
+            return f'"{rem.message}"'
 
         reminders_str = "\n".join(
             f"* {format_rem(reminder)} {self.format_time(evt.sender, reminder)}"
             for reminder in self.db.all_for_user(evt.sender, room_id=room_id)
         )
-        message = "upcoming reminders"
+        scope = t("list_scope_base", lang)
         if room_id:
-            message += " in this room"
+            scope += t("list_scope_room", lang)
         if len(reminders_str) == 0:
-            await evt.reply(f"You have no {message} :(")
+            await self.reply_l(evt, "list_empty", scope=scope)
         else:
-            await evt.reply(f"Your {message}:\n\n{reminders_str}")
+            await evt.reply(t("list_header", lang, scope=scope, items=reminders_str))
 
-    def format_time(self, sender: UserID, reminder: ReminderInfo) -> str:
-        return format_time(reminder.date.astimezone(self.db.get_timezone(sender)))
+    def format_time(self, sender: UserID, reminder: ReminderInfo, room_id=None) -> str:
+        lang = self._lang(room_id or reminder.room_id)
+        tz_date = reminder.date.astimezone(self.db.get_timezone(sender))
+        return format_time(tz_date, lang=lang)
 
     @remind.subcommand("locales", help="List available locales")
     async def locales(self, evt: MessageEvent) -> None:
+        lang = self._lang(evt.room_id)
+
         def _format_key(key: str) -> str:
             language, country = key.split("_")
             return f"{language.lower()}_{country.upper()}"
 
         await evt.reply(
-            "Available locales:\n\n"
+            t("locales_header", lang)
             + "\n".join(
                 f"* `{_format_key(key)}` - {locale.name}" for key, locale in locales.items()
             )
         )
 
     @staticmethod
-    def _fmt_locales(locale_ids: List[str]) -> str:
-        locale_names = [locales[id].name for id in locale_ids]
-        if len(locale_names) == 0:
-            return "unset"
-        elif len(locale_names) == 1:
-            return locale_names[0]
-        else:
-            return ", ".join(locale_names[:-1]) + " and " + locale_names[-1]
+    def _fmt_locales(locale_ids: List[str], lang: Lang) -> str:
+        locale_names = [locales[id].name for id in locale_ids if id in locales]
+        return fmt_locales_join(locale_names, lang)
 
     @remind.subcommand("locale", help="Set your locale")
     @command.argument("locale", required=False, pass_raw=True)
     async def locale(self, evt: MessageEvent, locale: str) -> None:
+        lang = self._lang(evt.room_id)
         if not locale:
-            await evt.reply(f"Your locale is {self._fmt_locales(self.db.get_locales(evt.sender))}")
+            names = self._fmt_locales(self.db.get_locales(evt.sender), lang)
+            await self.reply_l(evt, "locale_current", names=names)
             return
         locale_ids = [part.strip() for part in locale.lower().split(" ")]
         for locale_id in locale_ids:
             if locale_id not in locales:
-                await evt.reply(f"Locale `{locale_id}` is not supported")
+                await self.reply_l(evt, "locale_unsupported", locale_id=locale_id)
                 return
         self.db.set_locales(evt.sender, locale_ids)
-        await evt.reply(f"Set your locale to {self._fmt_locales(locale_ids)}")
+        names = self._fmt_locales(locale_ids, lang)
+        await self.reply_l(evt, "locale_set", names=names)
 
     @remind.subcommand("timezone", help="Set your timezone", aliases=("tz",))
     @command.argument("timezone", parser=parse_timezone, required=False)
     async def timezone(self, evt: MessageEvent, timezone: pytz.timezone) -> None:
         if not timezone:
-            await evt.reply(f"Your time zone is {self.db.get_timezone(evt.sender).zone}")
+            await self.reply_l(evt, "tz_current", zone=self.db.get_timezone(evt.sender).zone)
             return
         self.db.set_timezone(evt.sender, timezone)
-        await evt.reply(f"Set your timezone to {timezone.zone}")
+        await self.reply_l(evt, "tz_set", zone=timezone.zone)
 
     @command.passive(
         regex=r"(?:\U0001F44D[\U0001F3FB-\U0001F3FF]?)",

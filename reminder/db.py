@@ -13,8 +13,9 @@
 #
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
-from typing import Dict, Iterator, List, Optional
+from typing import Dict, Iterator, List, Literal, Optional
 from datetime import datetime
+import re
 
 from sqlalchemy import (
     Column,
@@ -35,6 +36,13 @@ from mautrix.types import EventID, RoomID, UserID
 
 from .util import ReminderInfo
 
+RoomLang = Literal["en", "ru"]
+LATIN_STREAK_THRESHOLD = 10
+_CYRILLIC_RE = re.compile(r"[а-яА-ЯёЁ]")
+_LATIN_RE = re.compile(r"[a-zA-Z]")
+_EN_COMMANDS = frozenset({"remind", "reminder"})
+_RU_COMMANDS = frozenset({"напомни"})
+
 
 class ReminderDatabase:
     reminder: Table
@@ -42,12 +50,16 @@ class ReminderDatabase:
     timezone: Table
     tz_cache: Dict[UserID, pytz.timezone]
     locale_cache: Dict[UserID, List[str]]
+    room_lang_cache: Dict[RoomID, RoomLang]
+    latin_streak: Dict[RoomID, int]
     db: Engine
 
     def __init__(self, db: Engine) -> None:
         self.db = db
         self.tz_cache = {}
         self.locale_cache = {}
+        self.room_lang_cache = {}
+        self.latin_streak = {}
 
         meta = MetaData()
         meta.bind = db
@@ -86,8 +98,63 @@ class ReminderDatabase:
             Column("user_id", String(255), primary_key=True),
             Column("locales", String(255), nullable=False),
         )
+        self.room_lang = Table(
+            "room_lang",
+            meta,
+            Column("room_id", String(255), primary_key=True),
+            Column("lang", String(8), nullable=False),
+        )
 
         meta.create_all()
+
+    def get_room_lang(self, room_id: RoomID) -> RoomLang:
+        try:
+            return self.room_lang_cache[room_id]
+        except KeyError:
+            rows = self.db.execute(
+                select([self.room_lang.c.lang]).where(self.room_lang.c.room_id == room_id)
+            )
+            try:
+                lang = next(rows)[0]
+                if lang not in ("en", "ru"):
+                    lang = "en"
+            except (StopIteration, IndexError):
+                lang = "en"
+            self.room_lang_cache[room_id] = lang
+            return lang
+
+    def set_room_lang(self, room_id: RoomID, lang: RoomLang) -> None:
+        if lang not in ("en", "ru"):
+            lang = "en"
+        with self.db.begin() as tx:
+            tx.execute(self.room_lang.delete().where(self.room_lang.c.room_id == room_id))
+            tx.execute(self.room_lang.insert().values(room_id=room_id, lang=lang))
+        self.room_lang_cache[room_id] = lang
+        if lang == "ru":
+            self.latin_streak.pop(room_id, None)
+
+    def touch_room_lang_from_message(self, room_id: RoomID, body: str) -> None:
+        if not body:
+            return
+        if _CYRILLIC_RE.search(body):
+            self.set_room_lang(room_id, "ru")
+            return
+        if _LATIN_RE.search(body):
+            streak = self.latin_streak.get(room_id, 0) + 1
+            self.latin_streak[room_id] = streak
+            if streak >= LATIN_STREAK_THRESHOLD:
+                self.set_room_lang(room_id, "en")
+
+    def touch_room_lang_from_command(self, room_id: RoomID, body: str, prefix: str = "!") -> None:
+        text = body.lstrip()
+        if not text.startswith(prefix):
+            return
+        rest = text[len(prefix) :]
+        cmd = rest.split(maxsplit=1)[0].lower() if rest else ""
+        if cmd in _RU_COMMANDS:
+            self.set_room_lang(room_id, "ru")
+        elif cmd in _EN_COMMANDS:
+            self.set_room_lang(room_id, "en")
 
     def set_timezone(self, user_id: UserID, tz: pytz.timezone) -> None:
         with self.db.begin() as tx:

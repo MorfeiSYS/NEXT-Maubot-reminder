@@ -200,3 +200,69 @@ locales["de_de"] = Locale(
         r"(?:\s|$)"
     ),
 )
+
+td_sep_ru = r"(?:[\s,]{1,3}(?:и\s)?)?"
+locales["ru_ru"] = Locale(
+    name="Russian",
+    timedelta=RegexMatcher(
+        rf"(?:(?:через|in)\s)?"
+        rf"(?:(?P<years>{number})\s?(?:г(?:од(?:а|ов)?)?|лет){td_sep_ru})?"
+        rf"(?:(?P<months>{number})\s?мес(?:яц(?:а|ев)?)?{td_sep_ru})?"
+        rf"(?:(?P<weeks>{number})\s?нед(?:ел(?:и|ь|ю))?{td_sep_ru})?"
+        rf"(?:(?P<days>{number})\s?(?:дн(?:я|ей)?|д(?:ень|ня|ней)){td_sep_ru})?"
+        rf"(?:(?P<hours>{number})\s?ч(?:ас(?:а|ов)?)?{td_sep_ru})?"
+        rf"(?:(?P<minutes>{number})\s?м(?:ин(?:ут(?:у|ы)?)?)?{td_sep_ru})?"
+        rf"(?:(?P<seconds>{number})\s?с(?:ек(?:унд(?:у|ы)?)?)?)?"
+        r"(?:\s|$)"
+    ),
+    date=ShortYearMatcher(
+        r"(?P<day>\d{1,2})\.(?P<month>\d{1,2})\.(?P<year>\d{2}(?:\d{2})?)(?:\s|$)"
+    ),
+    weekday=WeekdayMatcher(
+        pattern=r"(?:сегодня"
+        r"|завтра"
+        r"|послезавтра"
+        r"|пн(?:\.)?"
+        r"|вт(?:\.)?"
+        r"|ср(?:\.)?"
+        r"|чт(?:\.)?"
+        r"|пт(?:\.)?"
+        r"|сб(?:\.)?"
+        r"|вс(?:\.)?"
+        r"|понедельник"
+        r"|вторник"
+        r"|сред[аы]"
+        r"|четверг"
+        r"|пятниц[аы]"
+        r"|суббот[аы]"
+        r"|воскресень[ея])"
+        r"(?:\s|$)",
+        map={
+            "сег": +0,
+            "зав": +1,
+            "пос": +2,
+            "пон": MO,
+            "вто": TU,
+            "сре": WE,
+            "чет": TH,
+            "пят": FR,
+            "суб": SA,
+            "вос": SU,
+            "пн": MO,
+            "вт": TU,
+            "ср": WE,
+            "чт": TH,
+            "пт": FR,
+            "сб": SA,
+            "вс": SU,
+        },
+        substr=3,
+    ),
+    time=RegexMatcher(
+        r"\s?(?:в\s)?"
+        r"(?P<hour>\d{1,2})"
+        r"[:.](?P<minute>\d{2})"
+        r"(?:[:.](?P<second>\d{2}))?"
+        r"(?:\s|$)"
+    ),
+)
