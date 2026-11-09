@@ -130,7 +130,16 @@ class WeekdayMatcher(Matcher):
     def match(self, val: str) -> Optional[MatcherReturn]:
         match = self.regex.match(val)
         if match and match.end() > 0:
-            weekday = self.map[match.string[: self.substr].lower()]
+            matched = val[match.start() : match.end()].lower().rstrip(".")
+            weekday = None
+            for length in range(min(len(matched), self.substr), 0, -1):
+                try:
+                    weekday = self.map[matched[:length]]
+                    break
+                except KeyError:
+                    continue
+            if weekday is None:
+                return None
             if isinstance(weekday, int):
                 weekday = (datetime.now().weekday() + weekday) % 7
             return MatcherReturn(params={"weekday": weekday}, unconsumed=val[match.end() :])

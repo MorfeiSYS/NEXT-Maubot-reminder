@@ -37,7 +37,7 @@ from mautrix.util import background_task
 from mautrix.util.config import BaseProxyConfig
 
 from .db import ReminderDatabase
-from .i18n import Lang, build_remind_action, cmd_name, fmt_locales_join, t
+from .i18n import Lang, build_remind_action, cmd_meta, cmd_name, fmt_locales_join, t
 from .locales import locales
 from .util import (
     Config,
@@ -202,7 +202,7 @@ class ReminderBot(Plugin):
     @command.new(
         name=lambda self: self.base_command,
         aliases=lambda self, alias: alias in self.base_aliases,
-        help="Create a reminder",
+        help=cmd_meta("meta_remind"),
         require_subcommand=False,
         arg_fallthrough=False,
     )
@@ -234,7 +234,7 @@ class ReminderBot(Plugin):
         )
         await self._remind(evt, rem, now)
 
-    @remind.subcommand("for", help="Create a reminder for another user")
+    @remind.subcommand("for", help=cmd_meta("meta_for"))
     @command.argument("user_id", required=True, matches="@[^:]*:[a-zA-Z0-9.-]{1,255}(?::\d{1,5})?")
     @DateArgument("date", required=True)
     @command.argument("message", pass_raw=True, required=False)
@@ -256,7 +256,7 @@ class ReminderBot(Plugin):
         )
         await self._remind(evt, rem, now, recipient=user_id.split(":")[0].removeprefix("@"))
 
-    @remind.subcommand("reschedule", help="Reschedule a reminder you got", aliases=("again",))
+    @remind.subcommand("reschedule", help=cmd_meta("meta_reschedule"), aliases=("again",))
     @DateArgument("date", required=True)
     async def reschedule(self, evt: MessageEvent, date: datetime) -> None:
         self._on_user_command(evt)
@@ -328,12 +328,12 @@ class ReminderBot(Plugin):
             self.log.debug(f"Reminder {rem} is in less than a minute, scheduling now...")
             background_task.create(self.send_reminder(rem))
 
-    @remind.subcommand("help", help="Usage instructions")
+    @remind.subcommand("help", help=cmd_meta("meta_help"))
     async def help(self, evt: MessageEvent) -> None:
         self._on_user_command(evt)
         await evt.reply(self._help_text(evt))
 
-    @remind.subcommand("list", help="List your reminders")
+    @remind.subcommand("list", help=cmd_meta("meta_list"))
     @command.argument("all", required=False)
     async def list(self, evt: MessageEvent, all: str) -> None:
         self._on_user_command(evt)
@@ -373,7 +373,7 @@ class ReminderBot(Plugin):
         tz_date = reminder.date.astimezone(self.db.get_timezone(sender))
         return format_time(tz_date, lang=lang)
 
-    @remind.subcommand("locales", help="List available locales")
+    @remind.subcommand("locales", help=cmd_meta("meta_locales"))
     async def locales(self, evt: MessageEvent) -> None:
         self._on_user_command(evt)
         lang = self._lang(evt.room_id)
@@ -396,7 +396,7 @@ class ReminderBot(Plugin):
         locale_names = [locales[id].name for id in locale_ids if id in locales]
         return fmt_locales_join(locale_names, lang)
 
-    @remind.subcommand("locale", help="Set your locale")
+    @remind.subcommand("locale", help=cmd_meta("meta_locale"))
     @command.argument("locale", required=False, pass_raw=True)
     async def locale(self, evt: MessageEvent, locale: str) -> None:
         self._on_user_command(evt)
@@ -414,7 +414,7 @@ class ReminderBot(Plugin):
         names = self._fmt_locales(locale_ids, lang)
         await self.reply_l(evt, "locale_set", names=names)
 
-    @remind.subcommand("timezone", help="Set your timezone", aliases=("tz",))
+    @remind.subcommand("timezone", help=cmd_meta("meta_timezone"), aliases=("tz",))
     @command.argument("timezone", pass_raw=True, required=False)
     async def timezone(self, evt: MessageEvent, timezone: str) -> None:
         self._on_user_command(evt)

@@ -130,7 +130,42 @@ STRINGS = {
         "en": "I couldn't understand the date/time. Try `!{cmd} help` or examples like `2 days` / `friday 15:00`.",
         "ru": "Не удалось разобрать дату/время. Напишите `!{cmd} help` или, например, `2 дня` / `пятница 15:00`.",
     },
+    "meta_remind": {
+        "en": "Create a reminder",
+        "ru": "Создать напоминание",
+    },
+    "meta_for": {
+        "en": "Create a reminder for another user",
+        "ru": "Создать напоминание для другого пользователя",
+    },
+    "meta_reschedule": {
+        "en": "Reschedule a reminder you got",
+        "ru": "Перенести полученное напоминание",
+    },
+    "meta_help": {
+        "en": "Usage instructions",
+        "ru": "Справка по использованию",
+    },
+    "meta_list": {
+        "en": "List your reminders",
+        "ru": "Список ваших напоминаний",
+    },
+    "meta_locales": {
+        "en": "List available locales",
+        "ru": "Список доступных локалей",
+    },
+    "meta_locale": {
+        "en": "Set your locale",
+        "ru": "Задать локаль",
+    },
+    "meta_timezone": {
+        "en": "Set your timezone",
+        "ru": "Задать часовой пояс",
+    },
 }
+
+# Maubot command decorators accept a static help= string only (no per-room locale).
+META_LANG: Lang = "ru"
 
 
 def t(key: str, lang: Lang, **kwargs: str) -> str:
@@ -139,6 +174,10 @@ def t(key: str, lang: Lang, **kwargs: str) -> str:
     if kwargs:
         return text.format(**kwargs)
     return text
+
+
+def cmd_meta(key: str) -> str:
+    return t(key, META_LANG)
 
 
 def cmd_name(lang: Lang, base_command: str) -> str:
